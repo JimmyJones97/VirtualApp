@@ -3,18 +3,27 @@ package io.virtualapp.home;
 import android.app.Activity;
 import android.graphics.Bitmap;
 
+import com.google.android.gms.ads.AdListener;
+import com.google.android.gms.ads.AdRequest;
+import com.google.android.gms.ads.InterstitialAd;
+import com.lody.virtual.GmsSupport;
 import com.lody.virtual.client.core.VirtualCore;
-import com.lody.virtual.os.VUserHandle;
-import com.lody.virtual.remote.AppSetting;
-
-import org.jdeferred.DeferredManager;
+import com.lody.virtual.os.VUserInfo;
+import com.lody.virtual.os.VUserManager;
+import com.lody.virtual.remote.InstallResult;
+import com.lody.virtual.remote.InstalledAppInfo;
 
 import java.io.IOException;
 
 import io.virtualapp.VCommends;
 import io.virtualapp.abs.ui.VUiKit;
-import io.virtualapp.home.models.AppRepository;
+import io.virtualapp.home.ads.AdScheduler;
+import io.virtualapp.home.models.AppData;
+import io.virtualapp.home.models.AppInfoLite;
+import io.virtualapp.home.models.MultiplePackageAppData;
 import io.virtualapp.home.models.PackageAppData;
+import io.virtualapp.home.repo.AppRepository;
+import io.virtualapp.home.repo.PackageAppDataStorage;
 import jonathanfinerty.once.Once;
 
 /**
@@ -25,12 +34,30 @@ class HomePresenterImpl implements HomeContract.HomePresenter {
     private HomeContract.HomeView mView;
     private Activity mActivity;
     private AppRepository mRepo;
+    private InterstitialAd mInterstitialAd;
+    private AdScheduler mScheduler = new AdScheduler(10000L);
+
+    private AppData mTempAppData;
+
 
     HomePresenterImpl(HomeContract.HomeView view) {
         mView = view;
         mActivity = view.getActivity();
         mRepo = new AppRepository(mActivity);
         mView.setPresenter(this);
+        mInterstitialAd = new InterstitialAd(mActivity);
+        mInterstitialAd.setAdUnitId("ca-app-pub-1609791120068944/6903216910");
+        mInterstitialAd.loadAd(new AdRequest.Builder().build());
+        mInterstitialAd.setAdListener(new AdListener() {
+            @Override
+            public void onAdClosed() {
+                if (mTempAppData != null) {
+                    launchApp(mTempAppData);
+                    mTempAppData = null;
+                }
+                mInterstitialAd.loadAd(new AdRequest.Builder().build());
+            }
+        });
     }
 
     @Override
@@ -40,12 +67,34 @@ class HomePresenterImpl implements HomeContract.HomePresenter {
             mView.showGuide();
             Once.markDone(VCommends.TAG_SHOW_ADD_APP_GUIDE);
         }
+        if (!Once.beenDone(VCommends.TAG_ASK_INSTALL_GMS) && GmsSupport.isOutsideGoogleFrameworkExist()) {
+            mView.askInstallGms();
+            Once.markDone(VCommends.TAG_ASK_INSTALL_GMS);
+        }
     }
 
     @Override
-    public void launchApp(PackageAppData model, int userId) {
+    public void launchApp(AppData data) {
+        if (mInterstitialAd.isLoaded() && mScheduler.shouldShowAd()) {
+            mTempAppData = data;
+            mInterstitialAd.show();
+            mScheduler.adShowed();
+        } else {
+            launchAppNoAd(data);
+        }
+    }
+
+    public void launchAppNoAd(AppData data) {
         try {
-            LoadingActivity.launch(mActivity, model, userId);
+            if (data instanceof PackageAppData) {
+                PackageAppData appData = (PackageAppData) data;
+                appData.isFirstOpen = false;
+                LoadingActivity.launch(mActivity, appData.packageName, 0);
+            } else if (data instanceof MultiplePackageAppData) {
+                MultiplePackageAppData multipleData = (MultiplePackageAppData) data;
+                multipleData.isFirstOpen = false;
+                LoadingActivity.launch(mActivity, multipleData.appInfo.packageName, ((MultiplePackageAppData) data).userId);
+            }
         } catch (Throwable e) {
             e.printStackTrace();
         }
@@ -59,30 +108,74 @@ class HomePresenterImpl implements HomeContract.HomePresenter {
 
 
     @Override
-    public void addApp(PackageAppData data) {
-        final VirtualCore core = VirtualCore.get();
-        DeferredManager defer = VUiKit.defer();
-        defer.when(() -> mRepo.addVirtualApp(data))
-                .then((res) -> {
-                    if (!res.isSuccess) {
+    public void addApp(AppInfoLite info) {
+        class AddResult {
+            private PackageAppData appData;
+            private int userId;
+            private boolean justEnableHidden;
+        }
+        AddResult addResult = new AddResult();
+        VUiKit.defer().when(() -> {
+            InstalledAppInfo installedAppInfo = VirtualCore.get().getInstalledAppInfo(info.packageName, 0);
+            addResult.justEnableHidden = installedAppInfo != null;
+            if (addResult.justEnableHidden) {
+                int[] userIds = installedAppInfo.getInstalledUsers();
+                int nextUserId = userIds.length;
+                /*
+                  Input : userIds = {0, 1, 3}
+                  Output: nextUserId = 2
+                 */
+                for (int i = 0; i < userIds.length; i++) {
+                    if (userIds[i] != i) {
+                        nextUserId = i;
+                        break;
+                    }
+                }
+                addResult.userId = nextUserId;
+
+                if (VUserManager.get().getUserInfo(nextUserId) == null) {
+                    // user not exist, create it automatically.
+                    String nextUserName = "Space " + (nextUserId + 1);
+                    VUserInfo newUserInfo = VUserManager.get().createUser(nextUserName, VUserInfo.FLAG_ADMIN);
+                    if (newUserInfo == null) {
                         throw new IllegalStateException();
                     }
-                    AppSetting setting = core.findApp(data.packageName);
-                    data.loadData(mActivity, setting.getApplicationInfo(VUserHandle.USER_OWNER));
-                })
-                .done(res -> {
-                    data.isLoading = true;
-                    mView.addAppToLauncher(data);
-                    handleOptApp(data);
-                });
+                }
+                boolean success = VirtualCore.get().installPackageAsUser(nextUserId, info.packageName);
+                if (!success) {
+                    throw new IllegalStateException();
+                }
+            } else {
+                InstallResult res = mRepo.addVirtualApp(info);
+                if (!res.isSuccess) {
+                    throw new IllegalStateException();
+                }
+            }
+        }).then((res) -> {
+            addResult.appData = PackageAppDataStorage.get().acquire(info.packageName);
+        }).done(res -> {
+            boolean multipleVersion = addResult.justEnableHidden && addResult.userId != 0;
+            if (!multipleVersion) {
+                PackageAppData data = addResult.appData;
+                data.isLoading = true;
+                mView.addAppToLauncher(data);
+                handleOptApp(data, info.packageName, true);
+            } else {
+                MultiplePackageAppData data = new MultiplePackageAppData(addResult.appData, addResult.userId);
+                data.isLoading = true;
+                mView.addAppToLauncher(data);
+                handleOptApp(data, info.packageName, false);
+            }
+        });
     }
 
-    private void handleOptApp(PackageAppData data) {
+
+    private void handleOptApp(AppData data, String packageName, boolean needOpt) {
         VUiKit.defer().when(() -> {
             long time = System.currentTimeMillis();
-            if (!data.fastOpen) {
+            if (needOpt) {
                 try {
-                    VirtualCore.get().preOpt(data.packageName);
+                    VirtualCore.get().preOpt(packageName);
                 } catch (IOException e) {
                     e.printStackTrace();
                 }
@@ -96,24 +189,35 @@ class HomePresenterImpl implements HomeContract.HomePresenter {
                 }
             }
         }).done((res) -> {
-            data.isLoading = false;
+            if (data instanceof PackageAppData) {
+                ((PackageAppData) data).isLoading = false;
+                ((PackageAppData) data).isFirstOpen = true;
+            } else if (data instanceof MultiplePackageAppData) {
+                ((MultiplePackageAppData) data).isLoading = false;
+                ((MultiplePackageAppData) data).isFirstOpen = true;
+            }
             mView.refreshLauncherItem(data);
         });
     }
 
     @Override
-    public void deleteApp(PackageAppData model) {
+    public void deleteApp(AppData data) {
         try {
-            mRepo.removeVirtualApp(model);
-            mView.removeAppToLauncher(model);
+            mView.removeAppToLauncher(data);
+            if (data instanceof PackageAppData) {
+                mRepo.removeVirtualApp(((PackageAppData) data).packageName, 0);
+            } else {
+                MultiplePackageAppData appData = (MultiplePackageAppData) data;
+                mRepo.removeVirtualApp(appData.appInfo.packageName, appData.userId);
+            }
         } catch (Throwable e) {
             e.printStackTrace();
         }
     }
 
     @Override
-    public void createShortcut(PackageAppData model) {
-        VirtualCore.get().createShortcut(0, model.packageName, new VirtualCore.OnEmitShortcutListener() {
+    public void createShortcut(AppData data) {
+        VirtualCore.OnEmitShortcutListener listener = new VirtualCore.OnEmitShortcutListener() {
             @Override
             public Bitmap getIcon(Bitmap originIcon) {
                 return originIcon;
@@ -123,11 +227,13 @@ class HomePresenterImpl implements HomeContract.HomePresenter {
             public String getName(String originName) {
                 return originName + "(VA)";
             }
-        });
+        };
+        if (data instanceof PackageAppData) {
+            VirtualCore.get().createShortcut(0, ((PackageAppData) data).packageName, listener);
+        } else if (data instanceof MultiplePackageAppData) {
+            MultiplePackageAppData appData = (MultiplePackageAppData) data;
+            VirtualCore.get().createShortcut(appData.userId, appData.appInfo.packageName, listener);
+        }
     }
 
-    @Override
-    public void addNewApp() {
-        ListAppActivity.gotoListApp(mActivity);
-    }
 }

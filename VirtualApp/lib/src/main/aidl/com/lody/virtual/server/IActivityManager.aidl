@@ -5,13 +5,13 @@ import com.lody.virtual.remote.VParceledListSlice;
 import com.lody.virtual.remote.AppTaskInfo;
 import com.lody.virtual.remote.PendingIntentData;
 import com.lody.virtual.remote.PendingResultData;
+import com.lody.virtual.remote.BadgerInfo;
 import android.content.Intent;
 import android.content.pm.ActivityInfo;
 import android.app.Notification;
 import android.app.IServiceConnection;
 import android.app.IActivityManager.ContentProviderHolder;
 import com.lody.virtual.server.interfaces.IProcessObserver;
-import com.lody.virtual.server.interfaces.IUiObserver;
 
 
 interface IActivityManager {
@@ -23,10 +23,6 @@ interface IActivityManager {
     int getSystemPid();
 
     int getUidByPid(int pid);
-
-    void registerUIObserver(IUiObserver observer);
-
-    void unregisterUIObserver(IUiObserver observer);
 
     boolean isAppProcess(String processName);
 
@@ -56,6 +52,8 @@ interface IActivityManager {
 
     void appDoneExecuting();
 
+    int startActivities(in Intent[] intents, in String[] resolvedTypes, in IBinder token, in Bundle options, in int userId);
+
     int startActivity(in Intent intent, in ActivityInfo info, in IBinder resultTo, in Bundle options, String resultWho, int requestCode, int userId);
 
     void onActivityCreated(in ComponentName component, in ComponentName caller, in IBinder token, in Intent intent, in String affinity, int taskId, int launchMode, int flags);
@@ -83,7 +81,7 @@ interface IActivityManager {
     boolean stopServiceToken(in ComponentName className, in IBinder token, int startId, int userId);
 
     void setServiceForeground(in ComponentName className, in IBinder token, int id,
-                            in Notification notification, boolean keepNotification, int userId);
+                            in Notification notification, boolean removeNotification, int userId);
 
     int bindService(in IBinder caller, in IBinder token, in Intent service,
                     String resolvedType, in IServiceConnection connection, int flags, int userId);
@@ -108,9 +106,11 @@ interface IActivityManager {
 
     void removePendingIntent(IBinder binder);
 
+    String getPackageForIntentSender(IBinder binder);
+
     void processRestarted(in String packageName, in String processName, int userId);
 
     void broadcastFinish(in PendingResultData res);
 
-    Intent dispatchStickyBroadcast(in IntentFilter filter);
+    void notifyBadgerChange(in BadgerInfo info);
 }

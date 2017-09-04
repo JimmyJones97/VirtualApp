@@ -4,7 +4,8 @@ import android.app.Activity;
 import android.content.Intent;
 import android.os.Bundle;
 import android.support.annotation.Nullable;
-import android.support.v7.widget.GridLayoutManager;
+import android.support.v7.widget.OrientationHelper;
+import android.support.v7.widget.StaggeredGridLayoutManager;
 import android.view.LayoutInflater;
 import android.view.View;
 import android.view.ViewGroup;
@@ -23,7 +24,8 @@ import io.virtualapp.abs.ui.VFragment;
 import io.virtualapp.abs.ui.VUiKit;
 import io.virtualapp.home.adapters.CloneAppListAdapter;
 import io.virtualapp.home.adapters.decorations.ItemOffsetDecoration;
-import io.virtualapp.home.models.AppData;
+import io.virtualapp.home.models.AppInfo;
+import io.virtualapp.home.models.AppInfoLite;
 import io.virtualapp.widgets.DragSelectRecyclerView;
 
 /**
@@ -73,17 +75,17 @@ public class ListAppFragment extends VFragment<ListAppContract.ListAppPresenter>
         mRecyclerView = (DragSelectRecyclerView) view.findViewById(R.id.select_app_recycler_view);
         mProgressBar = (ProgressBar) view.findViewById(R.id.select_app_progress_bar);
         mInstallButton = (Button) view.findViewById(R.id.select_app_install_btn);
-        mRecyclerView.setLayoutManager(new GridLayoutManager(getContext(), 3));
-        mAdapter = new CloneAppListAdapter(getActivity());
+        mRecyclerView.setLayoutManager(new StaggeredGridLayoutManager(3, OrientationHelper.VERTICAL));
         mRecyclerView.addItemDecoration(new ItemOffsetDecoration(VUiKit.dpToPx(getContext(), 2)));
+        mAdapter = new CloneAppListAdapter(getActivity());
         mRecyclerView.setAdapter(mAdapter);
         mAdapter.setOnItemClickListener(new CloneAppListAdapter.ItemEventListener() {
             @Override
-            public void onItemClick(AppData appData, int position) {
+            public void onItemClick(AppInfo info, int position) {
                 int count = mAdapter.getSelectedCount();
                 if (!mAdapter.isIndexSelected(position)) {
                     if (count >= 9) {
-                        Toast.makeText(getContext(), "No more then 9 apps can be chosen at a time!", Toast.LENGTH_SHORT).show();
+                        Toast.makeText(getContext(), R.string.install_too_much_once_time, Toast.LENGTH_SHORT).show();
                         return;
                     }
                 }
@@ -97,16 +99,17 @@ public class ListAppFragment extends VFragment<ListAppContract.ListAppPresenter>
         });
         mAdapter.setSelectionListener(count -> {
             mInstallButton.setEnabled(count > 0);
-            mInstallButton.setText(String.format(Locale.ENGLISH, "Install to SandBox (%d)", count));
+            mInstallButton.setText(String.format(Locale.ENGLISH, getResources().getString(R.string.install_d), count));
         });
         mInstallButton.setOnClickListener(v -> {
             Integer[] selectedIndices = mAdapter.getSelectedIndices();
-            ArrayList<AppData> dataList = new ArrayList<AppData>(selectedIndices.length);
+            ArrayList<AppInfoLite> dataList = new ArrayList<AppInfoLite>(selectedIndices.length);
             for (int index : selectedIndices) {
-                dataList.add(mAdapter.getItem(index));
+                AppInfo info = mAdapter.getItem(index);
+                dataList.add(new AppInfoLite(info.packageName, info.path, info.fastOpen));
             }
             Intent data = new Intent();
-            data.putParcelableArrayListExtra(VCommends.EXTRA_APP_MODEL, dataList);
+            data.putParcelableArrayListExtra(VCommends.EXTRA_APP_INFO_LIST, dataList);
             getActivity().setResult(Activity.RESULT_OK, data);
             getActivity().finish();
         });
@@ -120,8 +123,8 @@ public class ListAppFragment extends VFragment<ListAppContract.ListAppPresenter>
     }
 
     @Override
-    public void loadFinish(List<AppData> models) {
-        mAdapter.setList(models);
+    public void loadFinish(List<AppInfo> infoList) {
+        mAdapter.setList(infoList);
         mRecyclerView.setDragSelectActive(true, 0);
         mAdapter.setSelected(0, false);
         mProgressBar.setVisibility(View.GONE);
